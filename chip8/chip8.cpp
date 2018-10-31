@@ -1,4 +1,12 @@
 #include "chip8.h"
+
+#include <fstream>
+#include <vector>
+#include <iostream>
+
+#include <string>
+#include <windows.h>
+
 /*
  pixels are represented as on/off by the bit, so 0xF = 1111 = draw 4 pixels in a row
 
@@ -32,6 +40,7 @@ unsigned char chip8_fontset[FONT_BUFFER_SIZE] =
 };
 
 static const unsigned short FONT_MEMORY_OFFSET = 512;
+static const unsigned short PROGRAM_OFFSET = FONT_MEMORY_OFFSET + FONT_BUFFER_SIZE;
 
 void chip8Initialize(chip8& cpu)
 {
@@ -45,7 +54,7 @@ void chip8Initialize(chip8& cpu)
   // Clear registers V0-VF
   // Clear memory
 
-  // load fond into memory
+  // load font into memory
   for (unsigned char i = 0; i < FONT_BUFFER_SIZE; ++i) {
     cpu.memory[i + FONT_MEMORY_OFFSET] = chip8_fontset[i];
   }
@@ -55,6 +64,21 @@ void chip8Initialize(chip8& cpu)
 
 void chip8LoadGame(chip8& cpu, const std::string & file)
 {
+  std::ifstream input;
+  input.open(file, std::ios::binary | std::ios::ate);
+  std::ifstream::pos_type len = input.tellg();
+
+  if (len > 0x200) {
+    throw std::runtime_error("Program too large");
+  }
+
+  input.seekg(0, std::ios::beg);  
+
+  //unsigned char* buffer = new unsigned char[len];
+  //input.read((char*)buffer, len);
+  input.read(reinterpret_cast<char*>(&cpu.memory[PROGRAM_OFFSET]), len);
+  std::streamsize read = input.gcount();
+  input.close();
 }
 
 void chip8Cycle(chip8& cpu)

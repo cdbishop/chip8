@@ -4,6 +4,8 @@
 #include <ctime>
 #include <cstdlib>
 
+#include "chip8.h"
+
 void Render(sf::RenderWindow &window, sf::RectangleShape &sq);
 sf::RectangleShape createPixel(float x, float y);
 
@@ -16,6 +18,10 @@ int main()
   sf::RenderWindow window(sf::VideoMode(screenWidth, screenHeight, 32), "SFML Chip8",
     sf::Style::Titlebar | sf::Style::Close);
   window.setVerticalSyncEnabled(true);
+
+  chip8 cpu;
+  chip8Initialize(cpu);
+  chip8LoadGame(cpu, "BC_test.ch8");
 
   sf::RectangleShape sq = createPixel(10, 10);
 
