@@ -20,29 +20,31 @@ int main()
   window.setVerticalSyncEnabled(true);
 
   chip8 cpu;
-  chip8Initialize(cpu);
-  chip8LoadGame(cpu, "BC_test.ch8");
+  //chip8Initialize(cpu);
+  //chip8LoadRom(cpu, "BC_test.ch8");
 
-  sf::RectangleShape sq = createPixel(10, 10);
+  chip8test(cpu);
 
-  sf::Clock clock;
-  while (window.isOpen())
-  {
-    // Handle events
-    sf::Event event;
-    while (window.pollEvent(event))
-    {
-      // Window closed or escape key pressed: exit
-      if ((event.type == sf::Event::Closed) ||
-        ((event.type == sf::Event::KeyPressed) && (event.key.code == sf::Keyboard::Escape)))
-      {
-        window.close();
-        break;
-      }
-    }
+  //sf::RectangleShape sq = createPixel(10, 10);
 
-    Render(window, sq);
-  }
+  //sf::Clock clock;
+  //while (window.isOpen())
+  //{
+  //  // Handle events
+  //  sf::Event event;
+  //  while (window.pollEvent(event))
+  //  {
+  //    // Window closed or escape key pressed: exit
+  //    if ((event.type == sf::Event::Closed) ||
+  //      ((event.type == sf::Event::KeyPressed) && (event.key.code == sf::Keyboard::Escape)))
+  //    {
+  //      window.close();
+  //      break;
+  //    }
+  //  }
+
+  //  Render(window, sq);
+  //}
 
   return 0;
 }
