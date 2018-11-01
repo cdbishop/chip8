@@ -648,9 +648,9 @@ namespace test {
 void chip8test(chip8& cpu) {
   
   //test::displayClear(cpu);
+  //test::subroutineReturn(cpu);
   test::jump(cpu);
   test::subroutine(cpu);
-  //test::subroutineReturn(cpu);
   test::BranchIfEqToVal(cpu);
   test::BranchIfNEqToVal(cpu);
   test::BranchIfEqReg(cpu);
@@ -662,5 +662,6 @@ void chip8test(chip8& cpu) {
   test::RegXorEq(cpu);
   test::AddRegCarry(cpu);
   test::SubRegCarry(cpu);
+
 
 }
