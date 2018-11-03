@@ -5,7 +5,11 @@
 #include <iostream>
 
 #include <string>
-#include <windows.h>
+#include <time.h>
+#include <set>
+#include <thread>
+#include <mutex>
+#include <chrono>
 
 /*
  pixels are represented as on/off by the bit, so 0xF = 1111 = draw 4 pixels in a row
@@ -42,10 +46,13 @@ unsigned char chip8_fontset[FONT_BUFFER_SIZE] =
 static const unsigned short FONT_MEMORY_OFFSET = 512;
 static const unsigned short PROGRAM_OFFSET = FONT_MEMORY_OFFSET + FONT_BUFFER_SIZE;
 
+static std::mutex io_mutex;
+
 namespace impl {
 
   void opcode00E0_ClearScreen(chip8& cpu) {
-    printf("opcode: 00E0 - ClearScreen: Not implemented!");
+    std::memset(cpu.gfx, 0, sizeof(char) * GfxDisplaySize);
+    cpu.pc += 2;
   }
 
   void opcode00EE_SubroutineReturn(chip8& cpu) {
@@ -74,30 +81,30 @@ namespace impl {
   // opcode 3XNN: if(register[x] == NN skip next instruction
   void opcode3XNN_BranchIfEqToVal(chip8& cpu, unsigned short opcode) {
     if (cpu.registers[(opcode & 0x0F00) >> 8] == (opcode & 0x00FF)) {
-      cpu.pc += 2;
+      cpu.pc += 4;
     }
     else {
-      ++cpu.pc;
+      cpu.pc += 2;
     }
   }
 
   // opcode 4XNN: if(register[x] != NN skip next instruction
   void opcode4XNN_BranchIfNEq(chip8& cpu, unsigned short opcode) {
     if (cpu.registers[(opcode & 0x0F00) >> 8] != (opcode & 0x00FF)) {
-      cpu.pc += 2;
+      cpu.pc += 4;
     }
     else {
-      ++cpu.pc;
+      cpu.pc += 2;
     }
   }
 
   // opcode 5XY0: skip next instruction if register[x] == register[y]
   void opcode5XYN_BranchIfEqReg(chip8& cpu, unsigned short opcode) {
     if (cpu.registers[(opcode & 0x0F00) >> 8] == cpu.registers[(opcode & 0x00F0) >> 4]) {
-      cpu.pc += 2;
+      cpu.pc += 4;
     }
     else {
-      ++cpu.pc;
+      cpu.pc += 2;
     }
   }
 
@@ -155,8 +162,8 @@ namespace impl {
     cpu.pc += 2;
   }
 
-  // opcode 8XY5: add subtract register[y] from from register[x] (register[x] -= from register[y]), set register[0xF] to 0 if theres a borrow (e.g. register[y] > register[x])
-  void opcode8XY5_SubRegCarry(chip8& cpu, unsigned short opcode) {
+  // opcode 8XY5: subtract register[y] from from register[x] (register[x] -= from register[y]), set register[0xF] to 0 if theres a borrow (e.g. register[y] > register[x])
+  void opcode8XY5_SubEqRegCarry(chip8& cpu, unsigned short opcode) {
     //carry = 0 if borrow, e.g. register[y] > register[x]
     if (cpu.registers[(opcode & 0x00F0) >> 4] > (unsigned char)cpu.registers[(opcode & 0x0F00) >> 8]) {
       cpu.registers[0xF] = 0;
@@ -166,11 +173,206 @@ namespace impl {
     }
 
     cpu.registers[(opcode & 0x0F00) >> 8] -= cpu.registers[(opcode & 0x00F0) >> 4];
+    cpu.pc += 2;
+  }
+
+  // store lest significant bit (lowest value) of register[x] in register[0xF] and shift register[x] right by 1 (>> 1)
+  void opcode8XY6_RegShiftRight(chip8& cpu, unsigned short opcode) {
+    cpu.registers[0xF] = cpu.registers[(opcode & 0xF00) >> 8] & 1;
+    cpu.registers[(opcode & 0xF00) >> 8] >>= 1;
+    cpu.pc += 2;
+  }
+
+  // register[x] = register[y] - register[x], set register[0xF] = 0 if theres a borrow
+  void opcode8XY7_SubRegCarry(chip8& cpu, unsigned short opcode) {
+    if (cpu.registers[(opcode & 0x0F00) >> 8] > (unsigned char)cpu.registers[(opcode & 0x00F0) >> 4]) {
+      cpu.registers[0xF] = 0;
+    }
+    else {
+      cpu.registers[0xF] = 1;
+    }
+
+    cpu.registers[(opcode & 0x0F00) >> 8] = cpu.registers[(opcode & 0x00F0) >> 4] - cpu.registers[(opcode & 0x0F00) >> 8];
+    cpu.pc += 2;
+  }
+
+  // store most significant big (highest bit) of register[x] in register[0xF] and shift register[x] left by 1
+  void opcode8XYE_RegShiftLeft(chip8& cpu, unsigned short opcode) {
+    cpu.registers[0xF] = (cpu.registers[(opcode & 0x0F00) >> 8] >> 4) & 0xF;
+    cpu.registers[(opcode & 0x0F00) >> 8] <<= 1;
+    cpu.pc += 2;
+  }
+
+  // skip next instruction if register[x] != register[y]
+  void opcode9XY0_BranchIfNEqReg(chip8& cpu, unsigned short opcode) {
+    if (cpu.registers[(opcode & 0x0F00) >> 8] != cpu.registers[(opcode & 0x00F0) >> 4]) {
+      cpu.pc += 4;
+    }
+    else {
+      cpu.pc += 2;
+    }
   }
   
   // opcode ANNN: set I to NNN
   void opcodeANNN_SetIndex(chip8& cpu, unsigned short opcode) {
-    cpu.index = opcode & 0xFFF;
+    cpu.index = (unsigned short)(opcode & 0xFFF);
+    cpu.pc += 2;
+  }
+
+  // opcode BNNN: jump to address NNN + register[0]
+  void opcodeBNNN_JumpToAddr(chip8& cpu, unsigned short opcode) {
+    cpu.pc = cpu.registers[0] + opcode & 0xFFF;
+  }
+
+  // opcode CXNN: set register[x] to rand() & NN - where rand is 0 - 255
+  void opcodeCXNN_Rand(chip8& cpu, unsigned short opcode) {
+    cpu.registers[(opcode & 0x0F00) >> 8] = (rand() % 256) & (opcode & 0xFF);
+    cpu.pc += 2;
+  }
+
+  void opcodeDXYN_Draw(chip8& cpu, unsigned short opcode) {
+    // draw sprite at position register[x], register[y] with a width of 8 pixels and a height of N
+    // read pixel data from index
+    // for each pixel position in gfx - flip the state
+    // if any pixel was turned off, set register[0xF] to 1
+    unsigned short posx = cpu.registers[(opcode & 0x0F00) >> 8];
+    unsigned short posy = cpu.registers[(opcode & 0x00F0) >> 4];
+    unsigned short height = opcode & 0x000F;
+    unsigned short pixel;
+
+    // each memory value is one line in X, the value itself is the length
+    // height == number of memory values from I to read
+    /* e.g.
+        memory[I]     = 0x3C;
+        memory[I + 1] = 0xC3;
+        memory[I + 2] = 0xFF;
+
+        HEX    BIN        Sprite
+        0x3C   00111100     ****
+        0xC3   11000011   **    **
+        0xFF   11111111   ********
+    */
+
+    //reset the register [0xF] to 0
+    cpu.registers[0xF] = 0;
+    for (unsigned int y = 0; y < height; ++y) {
+      // get the pixel data for the start of the current line from memory
+      pixel = cpu.memory[cpu.index + y];
+      for (int x = 0; x < 8; ++x) {
+        if ((pixel & (0x80 >> x)) != 0) {
+          if (cpu.gfx[(posx + x + ((posy + y) * GfxDisplayWidth))] == 1) {
+            cpu.registers[0xF] = 1;
+          }
+
+          cpu.gfx[posx + x + ((posy + y) * GfxDisplayWidth)] ^= 1;
+        }
+      }
+    }
+
+    // TODO: signal draw
+    cpu.pc += 2;
+  }
+
+  void opcodeEX9E_SkipIfKeyPressed(chip8& cpu, unsigned short opcode) {
+    // opcode: EX9E - key index stored in register[x], if pressed skip next instruction
+    if (cpu.key[cpu.registers[(opcode & 0x0F00) >> 8]] != 0) {
+      cpu.pc += 4;
+    }
+    else {
+      cpu.pc += 2;
+    }
+  }
+
+  void opcodeEX9E_SkipIfKeyNotPressed(chip8& cpu, unsigned short opcode) {
+    // opcode: EX9E - key index stored in register[x], if pressed skip next instruction
+    if (cpu.key[cpu.registers[(opcode & 0x0F00) >> 8]] == 0) {
+      cpu.pc += 4;
+    }
+    else {
+      cpu.pc += 2;
+    }
+  }
+
+  void opcodeFX07_GetDelay(chip8& cpu, unsigned short opcode) {
+    // opcode: FX07 - register[x] = delay_timer
+    cpu.registers[(opcode & 0xF00) >> 8] = cpu.delay_timer;
+    cpu.pc += 2;
+  }
+
+  void opcodeFX0A_WaitForKey(chip8& cpu, unsigned short opcode) {
+    // opcode: FX0A - wait for any key, store in FX0A
+    bool got_key = false;
+    unsigned char key = 0;
+
+    while (!got_key) {      
+      {
+        std::lock_guard<std::mutex> lk(io_mutex);
+        for (unsigned char idx = 0; idx < MaxNumKeys; ++idx) {
+          if (cpu.key[idx] != 0) {
+            got_key = true;
+            key = idx;
+            break;
+          }
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    cpu.registers[(opcode & 0xF00) >> 8] = key;
+    cpu.pc += 2;
+  }
+
+  void opcodeFX15_SetDelayTimer(chip8& cpu, unsigned short opcode) {
+    cpu.delay_timer = cpu.registers[(opcode & 0xF00) >> 8];
+    cpu.pc += 2;
+  }
+
+  void opcodeFX18_SetSoundTimer(chip8& cpu, unsigned short opcode) {
+    cpu.sound_timer = cpu.registers[(opcode & 0xF00) >> 8];
+    cpu.pc += 2;
+  }
+
+  void opcodeFX1E_AddIndex(chip8& cpu, unsigned short opcode) {
+    cpu.index += cpu.registers[(opcode & 0xF00) >> 8];
+    cpu.pc += 2;
+  }
+
+  void opcodeFX29_SetSpriteAddr(chip8& cpu, unsigned short opcode) {
+    cpu.index = FONT_MEMORY_OFFSET + cpu.registers[(opcode & 0xF00) >> 8];
+    cpu.pc += 2;
+  }
+
+  void opcodeFX33_BCD(chip8& cpu, unsigned short opcode) {
+    // opcode FX33 - store the binary coded repr of register[x] as separate units in memory starting at I
+    // so 100's at memory[index]
+    // so 10's at memory[index + 1]
+    // so 1's at memory[index + 2]
+
+    // get the unit value
+    //254 / 100 = 2
+    cpu.memory[cpu.index] = (cpu.registers[(opcode & 0xF00) >> 8] / 100);
+    //254 / 10 = 25 % 10 = 5
+    cpu.memory[cpu.index + 1] = (cpu.registers[(opcode & 0xF00) >> 8] / 10) % 10;
+    //254 % 100 = 54 % 10 = 4
+    cpu.memory[cpu.index + 2] = (cpu.registers[(opcode & 0xF00) >> 8] % 100) % 10;
+    cpu.pc += 2;
+  }
+
+  void opcodeFX55_RegDump(chip8& cpu, unsigned short opcode) {
+    // store values cpu.register[0] to cpu.register[x] in memory starting at cpu.index, then cpu.index+1, cpu.index+2
+    // cpu.index does not change
+    for (unsigned char i = 0; i <= (opcode & 0xF00) >> 8; ++i) {
+      cpu.memory[cpu.index + i] = cpu.registers[i];
+    }
+    cpu.pc += 2;
+  }
+
+  void opcodeFX65_RegLoad(chip8& cpu, unsigned short opcode) {
+    // load values cpu.register[0] to cpu.register[x] from memory starting at cpu.index, then cpu.index+1, cpu.index+2
+    // cpu.index does not change
+    for (unsigned char i = 0; i <= (opcode & 0xF00) >> 8; ++i) {
+      cpu.registers[i] = cpu.memory[cpu.index + i];
+    }
     cpu.pc += 2;
   }
 }
@@ -194,6 +396,9 @@ void chip8Initialize(chip8& cpu)
   // Clear memory
   std::memset(cpu.memory, 0, sizeof(unsigned char) * MaxMemory);
 
+  // clear key states
+  std::memset(cpu.key, 0, sizeof(unsigned char) * MaxNumKeys);
+
   // load font into memory
   for (unsigned char i = 0; i < FONT_BUFFER_SIZE; ++i) {
     cpu.memory[i + FONT_MEMORY_OFFSET] = chip8_fontset[i];
@@ -202,6 +407,9 @@ void chip8Initialize(chip8& cpu)
   // reset timers
   cpu.delay_timer = 0;
   cpu.sound_timer = 0;
+
+  // init rand
+  srand((unsigned int)time(NULL));
 }
 
 void chip8LoadRom(chip8& cpu, const std::string & file)
@@ -245,10 +453,6 @@ void chip8Cycle(chip8& cpu)
       printf("Unknown opcode");
       return;
     }
-    break;
-
-  case 0xA000:    
-    impl::opcodeANNN_SetIndex(cpu, opcode);
     break;
 
   case 0x1000:
@@ -302,7 +506,19 @@ void chip8Cycle(chip8& cpu)
       break;
 
     case 0x0005:
-      impl::opcode8XY5_SubRegCarry(cpu, opcode);
+      impl::opcode8XY5_SubEqRegCarry(cpu, opcode);
+      break;
+
+    case 0x0006:
+      impl::opcode8XY6_RegShiftRight(cpu, opcode);
+      break;
+
+    case 0x0007:
+      impl::opcode8XY7_SubRegCarry(cpu, opcode);
+      break;
+
+    case 0x000E:
+      impl::opcode8XYE_RegShiftLeft(cpu, opcode);
       break;
 
     default:
@@ -311,57 +527,80 @@ void chip8Cycle(chip8& cpu)
     }
     break;
 
-  
-  case 0x0004:
-    // add value in V[Y] to value in V[X], if result is > 255, set the carry bit in V[0xF] to 1
-    // get the index of registers for Y by moving the value from 0x00Y0 to 0x000Y
-    if (cpu.registers[(opcode & 0x00F0) >> 4] > (0xFF - cpu.registers[(opcode & 0x0F00) >> 8])) {
-      cpu.registers[0xF] = 1;
-    }
-    else {
-      cpu.registers[0xF] = 0;
-    }
-
-    cpu.registers[(opcode & 0x0F00) >> 8] += cpu.registers[(opcode & 0x00F0) >> 4];
-    cpu.pc += 2;
+  case 0x9000:
+    impl::opcode9XY0_BranchIfNEqReg(cpu, opcode);
+    break;
+    
+  case 0xA000:
+    impl::opcodeANNN_SetIndex(cpu, opcode);
     break;
 
-  // opcode DXYN
+  case 0xB000:
+    impl::opcodeBNNN_JumpToAddr(cpu, opcode);
+    break;
+
+  case 0xC000:
+    impl::opcodeCXNN_Rand(cpu, opcode);
+    break;
+
   case 0xD000: {
-    // draw sprite at position register[x], register[y] with a width of 8 pixels and a height of N
-    // read pixel data from index
-    // for each pixel position in gfx - flip the state
-    // if any pixel was turned off, set register[0xF] to 1
-    unsigned short posx = cpu.registers[opcode & 0x0F00 >> 8];
-    unsigned short posy = cpu.registers[opcode & 0x00F0 >> 4];
-    unsigned short height = opcode & 0x000F;
-    unsigned short pixel;
+    impl::opcodeDXYN_Draw(cpu, opcode);
+    break;
+  }
 
-    // each memory value is one line in X, the value itself is the length
-    // height == number of memory values from I to read
-    /* e.g.
-        memory[I]     = 0x3C;
-        memory[I + 1] = 0xC3;
-        memory[I + 2] = 0xFF;
+  case 0xE000: {
+    switch (opcode & 0x000F) {
+      case 0x000E:
+        impl::opcodeEX9E_SkipIfKeyPressed(cpu, opcode);
+        break;
 
-        HEX    BIN        Sprite
-        0x3C   00111100     ****
-        0xC3   11000011   **    **
-        0xFF   11111111   ********
-    */
-
-    //reset the register [0xF] to 0
-    cpu.registers[0xF] = 0;
-    for (unsigned int y = 0; y < height; ++y) {
-      // get the pixel data for the start of the current line from memory
-      pixel = cpu.memory[cpu.index + y];
-      for (int x = 0; x < 8; ++x) {
-
-      }
+      case 0x0001:
+        impl::opcodeEX9E_SkipIfKeyNotPressed(cpu, opcode);
+        break;
     }
     break;
   }
 
+  case 0xF000:
+    switch (opcode & 0x00FF) {
+      case 0x0007:
+        impl::opcodeFX07_GetDelay(cpu, opcode);
+        break;
+
+      case 0x000A:
+        impl::opcodeFX0A_WaitForKey(cpu, opcode);
+        break;
+
+      case 0x0015:
+        impl::opcodeFX15_SetDelayTimer(cpu, opcode);
+        break;
+
+      case 0x0018:
+        impl::opcodeFX18_SetSoundTimer(cpu, opcode);
+        break;
+
+      case 0x001E:
+        impl::opcodeFX1E_AddIndex(cpu, opcode);
+        break;
+
+      case 0x0029:
+        impl::opcodeFX29_SetSpriteAddr(cpu, opcode);
+        break;
+
+      case 0x0033:
+        impl::opcodeFX33_BCD(cpu, opcode);
+        break;
+
+      case 0x0055:
+        impl::opcodeFX55_RegDump(cpu, opcode);
+        break;
+
+      case 0x0065:
+        impl::opcodeFX65_RegLoad(cpu, opcode);
+        break;
+    }
+    break;
+  
   default:
     printf("Unknown opcode");
     return;
@@ -385,6 +624,42 @@ namespace test {
 
   void testResult(bool pass) {
     std::cout << (pass ? "PASSED" : "FAILED");
+  }
+
+  void displayClear(chip8& cpu) {
+    std::cout << "Test: Display clear = ";
+    chip8Initialize(cpu);    
+    const unsigned short instruction = 0x00E0;
+    cpu.memory[PROGRAM_OFFSET + 4] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 5] = (unsigned char)(instruction & 0xFF);
+    
+    // fill the screen with pixels
+    for (unsigned short i = 0; i < GfxDisplaySize; ++i) {
+      cpu.gfx[i] = 1;
+    }
+    chip8Cycle(cpu);
+
+    // screen should be cleared
+    bool passed = true;
+    for (unsigned short i = 0; i < GfxDisplaySize; ++i) {
+      passed &= (cpu.gfx[i] == 0);
+    }
+    testResult(passed);
+    std::cout << std::endl;
+  }
+
+  void subroutineReturn(chip8 cpu) {
+    std::cout << "Test: subroutineReturn = ";
+    // subroutine return pops address off stack, sets pc to addr and reduces sp
+    chip8Initialize(cpu);    
+    const unsigned short instruction = 0x00EE;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.sp++;
+    cpu.stack[cpu.sp] = 0xFAB;
+    chip8Cycle(cpu);
+    testResult(cpu.sp == 0 && cpu.pc == 0xFAB);
+    std::cout << std::endl;
   }
 
   void jump(chip8& cpu) {
@@ -424,7 +699,7 @@ namespace test {
     cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
     cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
     cpu.registers[1] = 0x55;
-    unsigned short expected = cpu.pc + 2;
+    unsigned short expected = cpu.pc + 4;
     chip8Cycle(cpu);
     testResult(cpu.pc == expected);
 
@@ -434,7 +709,7 @@ namespace test {
     cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
     cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
     cpu.registers[1] = 99;
-    unsigned short expected2 = cpu.pc + 1;
+    unsigned short expected2 = cpu.pc + 2;
     chip8Cycle(cpu);
     testResult(cpu.pc == expected2);
 
@@ -449,7 +724,7 @@ namespace test {
     cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
     cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
     cpu.registers[1] = 0x55;
-    unsigned short expected = cpu.pc + 1;
+    unsigned short expected = cpu.pc + 2;
     chip8Cycle(cpu);
     testResult(cpu.pc == expected);
 
@@ -459,7 +734,7 @@ namespace test {
     cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
     cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
     cpu.registers[1] = 99;
-    unsigned short expected2 = cpu.pc + 2;
+    unsigned short expected2 = cpu.pc + 4;
     chip8Cycle(cpu);
     testResult(cpu.pc == expected2);
 
@@ -475,7 +750,7 @@ namespace test {
     cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
     cpu.registers[1] = 0x55;
     cpu.registers[2] = 0x55;
-    unsigned short expected = cpu.pc + 2;
+    unsigned short expected = cpu.pc + 4;
     chip8Cycle(cpu);
     testResult(cpu.pc == expected);
 
@@ -486,15 +761,15 @@ namespace test {
     cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
     cpu.registers[1] = 0x99;
     cpu.registers[2] = 0x55;
-    unsigned short expected2 = cpu.pc + 1;
+    unsigned short expected2 = cpu.pc + 2;
     chip8Cycle(cpu);
     testResult(cpu.pc == expected2);
 
     std::cout << std::endl;
   }
 
-  void RegLoad(chip8& cpu) {
-    std::cout << "Test: RegLoad = ";
+  void RegSet(chip8& cpu) {
+    std::cout << "Test: RegSet = ";
     chip8Initialize(cpu);
     const unsigned short instruction = 0x6244;
     cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
@@ -621,8 +896,8 @@ namespace test {
     std::cout << std::endl;
   }
 
-  void SubRegCarry(chip8& cpu) {
-    std::cout << "Test: SubRegCarry = ";
+  void SubEqRegCarry(chip8& cpu) {
+    std::cout << "Test: SubEqRegCarry = ";
     chip8Initialize(cpu);
     const unsigned short instruction = 0x8125;
     cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
@@ -643,25 +918,438 @@ namespace test {
 
     std::cout << std::endl;
   }
+
+  void RegShiftRight(chip8& cpu) {
+    std::cout << "Test: RegShiftRight = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0x8206;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[2] = 0x03;
+    chip8Cycle(cpu);
+    testResult(cpu.registers[2] == 0x01 && cpu.registers[0xF] == 1);
+
+    std::cout << ", ";
+    chip8Initialize(cpu);    
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[2] = 0x04;
+    chip8Cycle(cpu);
+    testResult(cpu.registers[2] == 0x02 && cpu.registers[0xF] == 0);
+
+    std::cout << std::endl;
+  }
+
+  void SubRegCarry(chip8& cpu) {
+    std::cout << "Test: SubRegCarry = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0x8127;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[1] = 0x2;
+    cpu.registers[2] = 0x6;
+    chip8Cycle(cpu);
+    testResult(cpu.registers[1] == 0x4 && cpu.registers[0xF] == 1);
+
+    std::cout << ", ";
+    chip8Initialize(cpu);
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[1] = 0xFF;
+    cpu.registers[2] = 0x4;
+    chip8Cycle(cpu);
+    testResult(cpu.registers[1] == 0x5 && cpu.registers[0xF] == 0);
+
+    std::cout << std::endl;
+  }
+
+  void RegShiftLeft(chip8& cpu) {
+    std::cout << "Test: RegShiftLeft = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0x820E;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[2] = 0xFF;
+    chip8Cycle(cpu);
+    testResult(cpu.registers[2] == 0xFE && cpu.registers[0xF] ==0xF);
+
+    std::cout << ", ";
+    chip8Initialize(cpu);
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[2] = 0xB;
+    chip8Cycle(cpu);
+    testResult(cpu.registers[2] == 0x16 && cpu.registers[0xF] == 0);
+
+    std::cout << std::endl;
+  }
+
+  void BranchIfNEqReg(chip8& cpu) {
+    std::cout << "Test: BranchIfEqReg = ";
+    chip8Initialize(cpu);
+    // skip next instruction if register[1] != register[2]
+    const unsigned short instruction = 0x9120;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[1] = 0x55;
+    cpu.registers[2] = 0x55;
+    unsigned short expected = cpu.pc + 2;
+    chip8Cycle(cpu);
+    testResult(cpu.pc == expected);
+
+    std::cout << ", ";
+    // should not skip as register != 55
+    chip8Initialize(cpu);
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[1] = 0x99;
+    cpu.registers[2] = 0x55;
+    unsigned short expected2 = cpu.pc + 4;
+    chip8Cycle(cpu);
+    testResult(cpu.pc == expected2);
+
+    std::cout << std::endl;
+  }
+
+  void SetIndex(chip8& cpu) {
+    std::cout << "Test: SetIndex = ";
+    chip8Initialize(cpu);
+    // skip next instruction if register[1] != register[2]
+    const unsigned short instruction = 0xA123;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    unsigned short expected = 0x123;
+    chip8Cycle(cpu);
+    testResult(cpu.index == expected);
+
+    std::cout << std::endl;
+  }
+
+  void JumpToAddr(chip8& cpu) {
+    std::cout << "Test: JumpToAddr = ";
+    chip8Initialize(cpu);
+    // jump to addr NNN in BNNN
+    const unsigned short instruction = 0xB123;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    unsigned short expected = 0x123;
+    chip8Cycle(cpu);
+    testResult(cpu.pc == expected);
+
+    std::cout << std::endl;
+  }
+
+  void draw(chip8& cpu) {
+    // 0xDXYN - (x,y) with height of N, sprite data starts at I
+    // each memory address is 1 byt - 8 bits, draw pixel if 1, so
+
+    std::cout << "Test: draw = ";
+    chip8Initialize(cpu);    
+    const unsigned short instruction = 0xD238;
+    cpu.registers[2] = 0x2;
+    cpu.registers[3] = 0x2;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    /*
+        memory[I]     = 0xFF;
+        memory[I + 1] = 0x17;
+        memory[I + 2] = 0x17;
+        memory[I + 2] = 0x17;
+
+        HEX    BIN        Sprite
+        0xFF   11111111   ********
+        0x17   00011000      **       
+        0x17   00011000      **   
+        0x17   00011000      **
+    */
+    cpu.index = PROGRAM_OFFSET + 2;
+    cpu.memory[cpu.index] = 0xFF;
+    cpu.memory[cpu.index + 1] = 0x18;
+    cpu.memory[cpu.index + 2] = 0x18;
+    cpu.memory[cpu.index + 3] = 0x18;
+
+    chip8Cycle(cpu);
+    
+    std::set<unsigned short> indices = {
+      (GfxDisplayWidth * 2) + 2,
+      (GfxDisplayWidth * 2) + 3,
+      (GfxDisplayWidth * 2) + 4,
+      (GfxDisplayWidth * 2) + 5,
+      (GfxDisplayWidth * 2) + 6,
+      (GfxDisplayWidth * 2) + 7,
+      (GfxDisplayWidth * 2) + 8,
+      (GfxDisplayWidth * 2) + 9,
+      (GfxDisplayWidth * 3) + 5,
+      (GfxDisplayWidth * 3) + 6,
+      (GfxDisplayWidth * 4) + 5,
+      (GfxDisplayWidth * 4) + 6,
+      (GfxDisplayWidth * 5) + 5,
+      (GfxDisplayWidth * 5) + 6,
+    };
+
+    bool pass = true;
+    for (unsigned char x = 0; x < GfxDisplayWidth; ++x) {
+      for (unsigned char y = 0; y < GfxDisplayHeight; ++y) {
+        const unsigned char idx = y * GfxDisplayWidth + x;
+        if (indices.count(idx)) {
+          pass &= (cpu.gfx[idx] == 1);
+        }
+        else {
+          pass &= (cpu.gfx[idx] == 0);
+        }
+      }
+    }
+
+    testResult(pass);
+
+    std::cout << std::endl;
+  }
+
+  void SkipIfKeyPressed(chip8& cpu) {
+    // EX9E: skip next instruction if cpu.key[cpu.register[X]] == 1
+    std::cout << "Test: SkipIfKeyPressed = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xE29E;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    // keyboard input is keys  0 - F
+    cpu.registers[2] = 0xD;
+    cpu.key[0xD] = 1;    
+    unsigned short expected = cpu.pc + 4;
+    chip8Cycle(cpu);    
+    testResult(cpu.pc == expected);
+
+    std::cout << ", ";
+    // dont skip if key not pressed
+    chip8Initialize(cpu);
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    // keyboard input is keys  0 - F
+    cpu.registers[2] = 0xD;    
+    unsigned short expected2 = cpu.pc + 2;
+    chip8Cycle(cpu);    
+    testResult(cpu.pc == expected2);
+
+    std::cout << std::endl;
+  }
+
+  void SkipIfKeyNotPressed(chip8& cpu) {
+    // EXA1: skip next instruction if cpu.key[cpu.register[X]] == 1
+    std::cout << "Test: SkipIfKeyNotPressed = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xE2A1;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    // keyboard input is keys  0 - F
+    cpu.registers[2] = 0xD;
+    cpu.key[0xD] = 1;
+    unsigned short expected = cpu.pc + 2;
+    chip8Cycle(cpu);    
+    testResult(cpu.pc == expected);
+
+    std::cout << ", ";
+    // dont skip if key not pressed
+    chip8Initialize(cpu);
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    // keyboard input is keys  0 - F
+    cpu.registers[2] = 0xD;
+    unsigned short expected2 = cpu.pc + 4;
+    chip8Cycle(cpu);    
+    testResult(cpu.pc == expected2);
+
+    std::cout << std::endl;
+  }
+
+  void ReadDelayTimer(chip8& cpu) {
+    // FX07 - set cpu.register[x] = cpu.delay_timer
+    std::cout << "Test: ReadDelayTimer = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF207;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    // set timer
+    cpu.delay_timer = 0xF;    
+    chip8Cycle(cpu);
+    testResult(cpu.registers[2] == 0xF);
+
+    std::cout << std::endl;
+  }
+
+  void WaitForKey(chip8& cpu) {
+    // FX0A - set cpu.register[x] to next key pressed
+    std::cout << "Test: ReadDelayTimer = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF20A;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+
+    std::chrono::high_resolution_clock::time_point start;
+    std::chrono::high_resolution_clock::time_point end;
+
+    // to test the wait - use a sep thread and sleep
+    auto waitForInput = std::thread([&]() {
+      start = std::chrono::high_resolution_clock::now();
+      chip8Cycle(cpu);
+      end = std::chrono::high_resolution_clock::now();
+    });
+
+    auto setInput = std::thread([&]() {
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      std::lock_guard<std::mutex> lk(io_mutex);
+      cpu.key[0xA] = 1;
+    });
+
+    setInput.join();
+    waitForInput.join();
+
+    bool waited = std::chrono::duration_cast<std::chrono::seconds>(end - start).count() >= 2;
+    bool gotKey = cpu.registers[2] == 0xA;
+    testResult(waited & gotKey);
+   
+    std::cout << std::endl;
+  }
+
+  void SetDelayTimer(chip8& cpu) {
+    // opcode FX15 - set delay timer to value in register[x]    
+    std::cout << "Test: SetDelayTimer = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF215;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);        
+    cpu.registers[2] = 0xF;
+    chip8Cycle(cpu);
+    // after setting - delay timer will always decrement by 1 within same cycle
+    testResult(cpu.delay_timer == (0x0F - 1));
+
+    std::cout << std::endl;
+  }
+
+  void SetSoundTimer(chip8& cpu) {
+    // opcode FX18 - set sound timer to value in register[x]    
+    std::cout << "Test: SetSoundTimer = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF218;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[2] = 0xF;
+    chip8Cycle(cpu);
+    // after setting - sound timer will always decrement by 1 within same cycle
+    testResult(cpu.sound_timer == (0x0F - 1));
+
+    std::cout << std::endl;
+  }
+
+  void AddIndex(chip8& cpu) {
+    // opcode FX1E 0 add cpu.register[x] to cpu.index
+    std::cout << "Test: AddIndex = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF21E;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[2] = 0xF;
+    const unsigned short expected = cpu.index + 0xF;
+    chip8Cycle(cpu);
+    testResult(cpu.index == expected);
+
+    std::cout << std::endl;
+  }
+
+  void SetSpriteAddr(chip8& cpu) {
+    // opcode FX29 - Set index to location of sprite for character in register[x]
+    std::cout << "Test: SetSpriteAddr = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF229;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    cpu.registers[2] = 0x7;
+    const unsigned short expected = FONT_MEMORY_OFFSET + 0x7;
+    chip8Cycle(cpu);
+    testResult(cpu.index == expected);
+
+    std::cout << std::endl;
+  }
+
+  void RegDump(chip8& cpu) {
+    std::cout << "Test: RegDump = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF755;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    // TEST: dump the registers 0 to 7 in memory
+    // Set registers to store the index of themselves as test data
+    for (unsigned char i = 0; i < 8; ++i) {
+      cpu.registers[i] = i;
+    }
+    cpu.index = PROGRAM_OFFSET + 2;
+    chip8Cycle(cpu);
+    bool passed = true;
+    for (unsigned short i = cpu.index; i < cpu.index + 7; ++i) {
+      passed &= (cpu.memory[i] == cpu.registers[i - cpu.index]);
+    }
+
+    testResult(passed);
+
+    std::cout << std::endl;
+  }
+
+  void RegLoad(chip8& cpu) {
+    std::cout << "Test: RegLoad = ";
+    chip8Initialize(cpu);
+    const unsigned short instruction = 0xF765;
+    cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+    cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+    // TEST DATA: set the values in memory from program_offset + 2 to program_offset + 2 + 7
+    // then load that into the registers
+    for (unsigned char i = 0; i < 8; ++i) {
+      cpu.memory[PROGRAM_OFFSET + 2 + i] = i;
+    }
+    cpu.index = PROGRAM_OFFSET + 2;
+    chip8Cycle(cpu);
+    bool passed = true;
+    for (unsigned short i = 0; i < 8; ++i) {
+      //passed &= (cpu.memory[i] == cpu.registers[i - cpu.index]);
+      passed &= (cpu.registers[i] == cpu.memory[PROGRAM_OFFSET + 2 + i]);
+    }
+
+    testResult(passed);
+
+    std::cout << std::endl;
+  }
 }
 
 void chip8test(chip8& cpu) {
   
-  //test::displayClear(cpu);
-  //test::subroutineReturn(cpu);
+  test::displayClear(cpu);
+  test::subroutineReturn(cpu);
   test::jump(cpu);
   test::subroutine(cpu);
   test::BranchIfEqToVal(cpu);
   test::BranchIfNEqToVal(cpu);
   test::BranchIfEqReg(cpu);
-  test::RegLoad(cpu);
+  test::RegSet(cpu);
   test::AddRegNoCarry(cpu);
   test::SetReg(cpu);
   test::RegOrEq(cpu);
   test::RegAndEq(cpu);
   test::RegXorEq(cpu);
   test::AddRegCarry(cpu);
+  test::SubEqRegCarry(cpu);
+  test::RegShiftRight(cpu);
   test::SubRegCarry(cpu);
-
-
+  test::RegShiftLeft(cpu);
+  test::BranchIfNEqReg(cpu);
+  test::SetIndex(cpu);
+  test::JumpToAddr(cpu);
+  test::draw(cpu);
+  test::SkipIfKeyPressed(cpu);
+  test::SkipIfKeyNotPressed(cpu);
+  test::ReadDelayTimer(cpu);
+  test::WaitForKey(cpu);
+  test::SetDelayTimer(cpu);
+  test::SetSoundTimer(cpu);
+  test::AddIndex(cpu);
+  test::SetSpriteAddr(cpu);
+  test::RegDump(cpu);
+  test::RegLoad(cpu);
 }
