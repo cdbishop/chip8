@@ -26,7 +26,8 @@ int main()
   chip8 cpu;
   chip8Initialize(cpu);
   //chip8LoadRom(cpu, "BC_test.ch8");
-  chip8LoadRom(cpu, "ZeroDemo.ch8");
+  //chip8LoadRom(cpu, "ZeroDemo.ch8");
+  chip8LoadRom(cpu, "PONG");
 
   //chip8test(cpu);
   //chip8testRender(cpu);
@@ -48,7 +49,10 @@ int main()
     }
 
     chip8Cycle(cpu);
-    Render(window, cpu);
+    if (cpu.draw_flag) {
+      Render(window, cpu);
+      cpu.draw_flag = false;
+    }
   }
 
   return 0;

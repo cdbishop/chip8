@@ -44,24 +44,79 @@ unsigned char chip8_fontset[FONT_BUFFER_SIZE] =
 };
 
 static const unsigned short FONT_MEMORY_OFFSET = 512;
-static const unsigned short PROGRAM_OFFSET = FONT_MEMORY_OFFSET + FONT_BUFFER_SIZE;
+//static const unsigned short PROGRAM_OFFSET = FONT_MEMORY_OFFSET + FONT_BUFFER_SIZE;
+static const unsigned short PROGRAM_OFFSET = 0x200;
 
 static std::mutex io_mutex;
+static int cycleCount = 0;
+
+namespace debug {
+
+  void dumpMemory(chip8& cpu, std::ofstream& file) {
+    file << "--------------------------------------------------" << std::endl;
+    for (unsigned short i = 0; i < MaxMemory; ++i) {
+      file << std::hex << (int)cpu.memory[i] << std::dec;
+      if ((i % 50) == 0) {
+        file << std::endl;
+      }
+    }
+    file << std::endl;
+    file << "--------------------------------------------------" << std::endl;
+  }
+
+  void dumpGraphics(chip8& cpu, std::ofstream& file) {
+    for (unsigned char x = 0; x < GfxDisplayWidth; ++x) {
+      file << "-";
+    }
+    file << std::hex << std::endl;
+
+    for (unsigned char y = 0; y < GfxDisplayHeight; ++y) {
+      for (unsigned char x = 0; x < GfxDisplayWidth; ++x) {
+        file << cpu.gfx[x + (y * GfxDisplayWidth)];
+      }
+      file << std::dec << std::endl;
+    }
+
+    for (unsigned char x = 0; x < GfxDisplayWidth; ++x) {
+      file << "-";
+    }
+    file << std::endl;
+  }
+
+  void dumpRegisters(chip8& cpu, std::ofstream& file) {
+    file << "---------" << std::hex << std::endl;
+    for (unsigned char i = 0; i < NumRegisters; ++i) {
+      file << "Register: " << (int)i << " = " << (int)cpu.registers[i] << std::endl;
+    }
+    file << "---------" << std::hex << std::endl;
+  }
+
+  void dumpState(chip8& cpu, std::ofstream& file) {
+    file << "Graphics: " << std::endl;
+    dumpGraphics(cpu, file);
+    file << "Memory: " << std::endl;
+    dumpMemory(cpu, file);
+    file << "Registers: " << std::endl;
+    dumpRegisters(cpu, file);
+
+    file << std::hex << "Index: " << cpu.index << std::dec << std::endl;
+    file << std::hex << "PC: " << cpu.pc << std::dec << std::endl;
+  }
+}
 
 namespace impl {
 
   void opcode00E0_ClearScreen(chip8& cpu) {
     std::memset(cpu.gfx, 0, sizeof(char) * GfxDisplaySize);
     cpu.pc += 2;
+    cpu.draw_flag = true;
   }
 
   void opcode00EE_SubroutineReturn(chip8& cpu) {
     //grab the saved address (where we wish to return) from the stack
-    cpu.pc = cpu.stack[cpu.sp];
-    // reset the value
-    cpu.stack[cpu.sp] = 0;
-    // reduce the stack pointer
     --cpu.sp;
+    cpu.pc = cpu.stack[cpu.sp];
+    cpu.pc += 2;    
   }
 
 
@@ -198,7 +253,8 @@ namespace impl {
 
   // store most significant big (highest bit) of register[x] in register[0xF] and shift register[x] left by 1
   void opcode8XYE_RegShiftLeft(chip8& cpu, unsigned short opcode) {
-    cpu.registers[0xF] = (cpu.registers[(opcode & 0x0F00) >> 8] >> 4) & 0xF;
+    //cpu.registers[0xF] = (cpu.registers[(opcode & 0x0F00) >> 8] >> 4) & 0xF;
+    cpu.registers[0xF] = cpu.registers[(opcode & 0x0F00) >> 8] >> 7;
     cpu.registers[(opcode & 0x0F00) >> 8] <<= 1;
     cpu.pc += 2;
   }
@@ -271,6 +327,7 @@ namespace impl {
 
     // TODO: signal draw
     cpu.pc += 2;
+    cpu.draw_flag = true;
   }
 
   void opcodeEX9E_SkipIfKeyPressed(chip8& cpu, unsigned short opcode) {
@@ -383,6 +440,7 @@ void chip8Initialize(chip8& cpu)
   cpu.opcode = 0;
   cpu.index = 0;
   cpu.sp = 0;
+  cpu.draw_flag = false;
 
   // Clear display
   std::memset(cpu.gfx, 0, sizeof(char) * GfxDisplaySize);
@@ -435,6 +493,15 @@ void chip8Cycle(chip8& cpu)
 {
   //opcode is split across two memory locations
   const unsigned short opcode = cpu.memory[cpu.pc] << 8 | cpu.memory[cpu.pc + 1];
+
+  // *** DEBUG ***
+ /* std::cout << std::hex << opcode << std::dec << std::endl;
+  std::ofstream outfile;
+  outfile.open("instructions.txt", std::ios_base::app);
+  outfile << "*************************************************************" << std::endl;
+  outfile << "Instruction: " << std::hex << opcode << std::dec << std::endl;
+  outfile << "cycle: " << cycleCount << std::endl;*/
+  // *************
 
   // the first 2 bytes represent the opcode
   switch (opcode & 0xF000) {
@@ -618,6 +685,10 @@ void chip8Cycle(chip8& cpu)
 
     --cpu.sound_timer;
   }
+
+  //debug::dumpState(cpu, outfile);
+  //outfile.close();
+  cycleCount++;
 }
 
 namespace test {

@@ -29,5 +29,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="BC_test.ch8" />
+    <None Include="pong.ch8" />
   </ItemGroup>
 </Project>

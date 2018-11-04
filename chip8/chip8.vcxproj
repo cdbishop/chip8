@@ -129,6 +129,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="BC_test.ch8" />
+    <None Include="pong.ch8" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

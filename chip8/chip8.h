@@ -33,6 +33,8 @@ struct chip8 {
   unsigned short sp;
 
   unsigned char key[MaxNumKeys];
+
+  bool draw_flag;
 };
 
 void chip8Initialize(chip8& cpu);
