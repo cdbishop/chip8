@@ -418,9 +418,9 @@ void chip8LoadRom(chip8& cpu, const std::string & file)
   input.open(file, std::ios::binary | std::ios::ate);
   std::ifstream::pos_type len = input.tellg();
 
-  if (len > 0x200) {
-    throw std::runtime_error("Program too large");
-  }
+  //if (len > 0x200) {
+  //  throw std::runtime_error("Program too large");
+  //}
 
   input.seekg(0, std::ios::beg);  
 
@@ -1352,4 +1352,50 @@ void chip8test(chip8& cpu) {
   test::SetSpriteAddr(cpu);
   test::RegDump(cpu);
   test::RegLoad(cpu);
+}
+
+void chip8testRender(chip8& cpu) {
+  std::cout << "Test: draw = ";
+  chip8Initialize(cpu);
+  const unsigned short instruction = 0xD238;
+  cpu.registers[2] = 0x2;
+  cpu.registers[3] = 0x2;
+  cpu.memory[PROGRAM_OFFSET] = (unsigned char)(instruction >> 8);
+  cpu.memory[PROGRAM_OFFSET + 1] = (unsigned char)(instruction & 0xFF);
+  /*
+      memory[I]     = 0xFF;
+      memory[I + 1] = 0x17;
+      memory[I + 2] = 0x17;
+      memory[I + 2] = 0x17;
+
+      HEX    BIN        Sprite
+      0xFF   11111111   ********
+      0x17   00011000      **
+      0x17   00011000      **
+      0x17   00011000      **
+  */
+  cpu.index = PROGRAM_OFFSET + 2;
+  cpu.memory[cpu.index] = 0xFF;
+  cpu.memory[cpu.index + 1] = 0x18;
+  cpu.memory[cpu.index + 2] = 0x18;
+  cpu.memory[cpu.index + 3] = 0x18;
+
+  chip8Cycle(cpu);
+
+  std::set<unsigned short> indices = {
+    (GfxDisplayWidth * 2) + 2,
+    (GfxDisplayWidth * 2) + 3,
+    (GfxDisplayWidth * 2) + 4,
+    (GfxDisplayWidth * 2) + 5,
+    (GfxDisplayWidth * 2) + 6,
+    (GfxDisplayWidth * 2) + 7,
+    (GfxDisplayWidth * 2) + 8,
+    (GfxDisplayWidth * 2) + 9,
+    (GfxDisplayWidth * 3) + 5,
+    (GfxDisplayWidth * 3) + 6,
+    (GfxDisplayWidth * 4) + 5,
+    (GfxDisplayWidth * 4) + 6,
+    (GfxDisplayWidth * 5) + 5,
+    (GfxDisplayWidth * 5) + 6,
+  };
 }

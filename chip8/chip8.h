@@ -40,3 +40,4 @@ void chip8LoadRom(chip8& cpu, const std::string& file);
 void chip8Cycle(chip8& cpu);
 
 void chip8test(chip8& cpu);
+void chip8testRender(chip8& cpu);
