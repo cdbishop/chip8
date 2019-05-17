@@ -27,7 +27,7 @@ int main()
   chip8Initialize(cpu);
   //chip8LoadRom(cpu, "BC_test.ch8");
   //chip8LoadRom(cpu, "ZeroDemo.ch8");
-  chip8LoadRom(cpu, "PONG");
+  chip8LoadRom(cpu, "pong.ch8");
 
   //chip8test(cpu);
   //chip8testRender(cpu);

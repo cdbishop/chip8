@@ -43,8 +43,7 @@ unsigned char chip8_fontset[FONT_BUFFER_SIZE] =
   0xF0, 0x80, 0xF0, 0x80, 0x80  // F
 };
 
-static const unsigned short FONT_MEMORY_OFFSET = 512;
-//static const unsigned short PROGRAM_OFFSET = FONT_MEMORY_OFFSET + FONT_BUFFER_SIZE;
+static const unsigned short FONT_MEMORY_OFFSET = 0x50;
 static const unsigned short PROGRAM_OFFSET = 0x200;
 
 static std::mutex io_mutex;
