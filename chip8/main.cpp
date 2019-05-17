@@ -67,7 +67,7 @@ void Render(sf::RenderWindow &window, chip8& cpu)
   for (unsigned short y = 0; y < GfxDisplayHeight; ++y) {
     for (unsigned short x = 0; x < GfxDisplayWidth; ++x) {      
       if (cpu.gfx[y * GfxDisplayWidth + x]) {
-        sf::RectangleShape sq = createPixel(x * PixelScaleX, y * PixelScaleY);
+        sf::RectangleShape sq = createPixel(static_cast<float>(x * PixelScaleX), static_cast<float>(y * PixelScaleY));
         window.draw(sq);
       }
     }
